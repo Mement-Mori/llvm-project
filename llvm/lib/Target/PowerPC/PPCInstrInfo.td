@@ -5436,3 +5436,19 @@ def : Pat<(int_ppc_fctudz f64:$A),
         (XSCVDPUXDS $A)>;
 def : Pat<(int_ppc_fctuwz f64:$A),
         (XSCVDPUXWS $A)>;
+
+def : Pat<(int_ppc_mfmsr), (MFMSR)>;
+def : Pat<(int_ppc_mftbu), (MFTB 269)>;
+
+let Predicates = [IsISA2_07] in {
+  def : Pat<(int_ppc_lharx xoaddr:$dst),
+          (LHARX xoaddr:$dst)>;
+  def : Pat<(int_ppc_lbarx xoaddr:$dst),
+          (LBARX xoaddr:$dst)>;
+  def : Pat<(int_ppc_sthcx xoaddr:$dst, gprc:$A),
+          (STHCX (EXTSH gprc:$A), xoaddr:$dst)>;
+}
+def : Pat<(int_ppc_dcbtstt xoaddr:$dst),
+          (DCBTST 16, xoaddr:$dst)>;
+def : Pat<(int_ppc_dcbtt xoaddr:$dst),
+          (DCBT 16, xoaddr:$dst)>;

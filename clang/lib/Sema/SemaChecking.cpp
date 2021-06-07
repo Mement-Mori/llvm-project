@@ -3360,6 +3360,10 @@ bool Sema::CheckPPCBuiltinFunctionCall(const TargetInfo &TI, unsigned BuiltinID,
   case PPC::BI__builtin_ppc_tw:
   case PPC::BI__builtin_ppc_tdw:
     return SemaBuiltinConstantArgRange(TheCall, 2, 0, 31);
+  case PPC::BI__builtin_ppc_dcbtstt:
+  case PPC::BI__builtin_ppc_dcbtt:
+    return SemaFeatureCheck(*this, TheCall, "extdiv",
+                            diag::err_ppc_builtin_only_on_arch, "7");
 #define CUSTOM_BUILTIN(Name, Intr, Types, Acc) \
   case PPC::BI__builtin_##Name: \
     return SemaBuiltinPPCMMACall(TheCall, Types);
