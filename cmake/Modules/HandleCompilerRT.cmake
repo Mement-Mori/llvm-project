@@ -33,7 +33,7 @@ endfunction()
 # This calls cache_compiler_rt_library that caches the path to speed up
 # repeated invocations with the same `name` and `target`.
 function(find_compiler_rt_library name variable)
-  cmake_parse_arguments(ARG "" "TARGET" "" ${ARGN})
+  cmake_parse_arguments(ARG "" "TARGET;FLAGS" "" ${ARGN})
   # While we can use compiler-rt runtimes with other compilers, we need to
   # query the compiler for runtime location and thus we require Clang.
   if(NOT CMAKE_CXX_COMPILER_ID MATCHES Clang)
@@ -47,7 +47,7 @@ function(find_compiler_rt_library name variable)
   if(NOT DEFINED COMPILER_RT_LIBRARY_builtins_${target})
     # If the cache variable is not defined, invoke Clang and then
     # set it with cache_compiler_rt_library.
-    set(clang_command ${CMAKE_CXX_COMPILER} ${CMAKE_REQUIRED_FLAGS})
+    set(clang_command ${CMAKE_CXX_COMPILER} "${ARG_FLAGS}")
     if(target)
       list(APPEND clang_command "--target=${target}")
     endif()

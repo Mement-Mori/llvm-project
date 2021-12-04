@@ -1,7 +1,7 @@
-// RUN: %libomptarget-compilexx-run-and-check-generic
+// amdgpu failing this test after Reapply "OpenMP: Start calling setTargetAttributes for generated kernels"
+// XFAIL: amdgcn-amd-amdhsa
 
-// amdgcn does not have printf definition
-// UNSUPPORTED: amdgcn-amd-amdhsa
+// RUN: %libomptarget-compilexx-run-and-check-generic
 
 #include <stdio.h>
 

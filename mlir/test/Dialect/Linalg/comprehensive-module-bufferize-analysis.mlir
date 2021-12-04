@@ -1,5 +1,10 @@
 // RUN: mlir-opt %s -linalg-comprehensive-module-bufferize=test-analysis-only -split-input-file | FileCheck %s
 
+// Run fuzzer with different seeds.
+// RUN: mlir-opt %s -linalg-comprehensive-module-bufferize="test-analysis-only analysis-fuzzer-seed=23" -split-input-file -o /dev/null
+// RUN: mlir-opt %s -linalg-comprehensive-module-bufferize="test-analysis-only analysis-fuzzer-seed=59" -split-input-file -o /dev/null
+// RUN: mlir-opt %s -linalg-comprehensive-module-bufferize="test-analysis-only analysis-fuzzer-seed=91" -split-input-file -o /dev/null
+
 //===----------------------------------------------------------------------===//
 // Simple cases
 //===----------------------------------------------------------------------===//
@@ -208,6 +213,72 @@ func @extract_slice_matching_insert_slice(
 
 // -----
 
+// CHECK-LABEL: @read_of_matching_insert_slice_source
+func @read_of_matching_insert_slice_source(
+    %A : tensor<?xf32> {linalg.inplaceable = true}, %idx : index, %idx2 : index)
+  -> (tensor<?xf32>, vector<5xf32>)
+{
+  %cst = arith.constant 0.0 : f32
+  %cst2 = arith.constant 1.0 : f32
+
+  //      CHECK: tensor.extract_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]}
+  %0 = tensor.extract_slice %A[%idx][%idx][1] : tensor<?xf32> to tensor<?xf32>
+
+  //      CHECK: linalg.fill
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]}
+  %1 = linalg.fill(%cst, %0) : f32, tensor<?xf32> -> tensor<?xf32>
+
+  //      CHECK: tensor.insert_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]}
+  %2 = tensor.insert_slice %1 into %A[%idx][%idx][1] : tensor<?xf32> into tensor<?xf32>
+
+  %3 = vector.transfer_read %1[%idx2], %cst2 : tensor<?xf32>, vector<5xf32>
+  return %2, %3 : tensor<?xf32>, vector<5xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @read_of_matching_insert_slice_source_interleaved
+func @read_of_matching_insert_slice_source_interleaved(
+    %A : tensor<?xf32> {linalg.inplaceable = true}, %idx : index, %idx2 : index,
+    %idx3 : index)
+  -> (tensor<?xf32>, vector<5xf32>)
+{
+  %cst = arith.constant 0.0 : f32
+  %cst2 = arith.constant 1.0 : f32
+
+  //      CHECK: tensor.extract_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["false"]}
+  %0 = tensor.extract_slice %A[%idx][%idx][1] : tensor<?xf32> to tensor<?xf32>
+
+  //      CHECK: linalg.fill
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]}
+  %1 = linalg.fill(%cst, %0) : f32, tensor<?xf32> -> tensor<?xf32>
+
+  //      CHECK: tensor.insert_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]}
+  %2 = tensor.insert_slice %1 into %A[%idx][%idx][1] : tensor<?xf32> into tensor<?xf32>
+
+  //      CHECK: tensor.extract_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]}
+  %4 = tensor.extract_slice %2[%idx3][%idx3][1] : tensor<?xf32> to tensor<?xf32>
+
+  //      CHECK: linalg.fill
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]}
+  %5 = linalg.fill(%cst, %4) : f32, tensor<?xf32> -> tensor<?xf32>
+
+  %3 = vector.transfer_read %1[%idx2], %cst2 : tensor<?xf32>, vector<5xf32>
+
+  //      CHECK: tensor.insert_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]}
+  %6 = tensor.insert_slice %5 into %2[%idx3][%idx3][1] : tensor<?xf32> into tensor<?xf32>
+
+  return %6, %3 : tensor<?xf32>, vector<5xf32>
+}
+
+// -----
+
 // CHECK-LABEL: func @extract_slice_linalg_readonly_use
 func @extract_slice_linalg_readonly_use(
     %A : tensor<?x?xf32>,
@@ -357,7 +428,9 @@ func @nested_extract_slice_and_insert(
     %A : tensor<?x?xf32>,
     %B : tensor<?x?xf32> {linalg.inplaceable = true},
     %C : tensor<?x?xf32> {linalg.inplaceable = true},
-    %idx : index)
+    %idx : index,
+    %sz1 : index,
+    %sz2 : index)
   ->  (tensor<?x?xf32>, tensor<?x?xf32>, tensor<?x?xf32>)
 {
   %f0 = arith.constant 0.0 : f32
@@ -426,9 +499,9 @@ func @nested_extract_slice_and_insert(
   // CHECK-NEXT: tensor.insert_slice
   // CHECK-SAME: {__inplace_results_attr__ = ["true"]}
   %sC = tensor.extract_slice %C[0, 0][%idx, %idx][1, 1] : tensor<?x?xf32> to tensor<?x?xf32>
-  %ssC = tensor.extract_slice %sC[0, 0][4, 4][1, 1] : tensor<?x?xf32> to tensor<4x4xf32>
-  %FC = linalg.fill(%f0, %ssC) : f32, tensor<4x4xf32> -> tensor<4x4xf32>
-  %rsC = tensor.insert_slice %FC into %sC[0, 0][12345, 67890][1, 1] : tensor<4x4xf32> into tensor<?x?xf32>
+  %ssC = tensor.extract_slice %sC[0, 0][%sz1, 4][1, 1] : tensor<?x?xf32> to tensor<?x4xf32>
+  %FC = linalg.fill(%f0, %ssC) : f32, tensor<?x4xf32> -> tensor<?x4xf32>
+  %rsC = tensor.insert_slice %FC into %sC[0, 0][%sz2, 4][1, 1] : tensor<?x4xf32> into tensor<?x?xf32>
   %rC = tensor.insert_slice %rsC into %C[0, 0][%idx, %idx][1, 1] : tensor<?x?xf32> into tensor<?x?xf32>
 
   return %rA, %rB, %rC: tensor<?x?xf32>, tensor<?x?xf32>, tensor<?x?xf32>
@@ -941,6 +1014,28 @@ func @interleaved_extract_insert_slice_chain_2(
 
 // -----
 
+// CHECK-LABEL: func @extract_once_insert_twice
+func @extract_once_insert_twice(
+    %arg2: tensor<62x90xf32> {linalg.inplaceable = true})
+  -> (tensor<62x90xf32>)
+{
+  //      CHECK: tensor.extract_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+  %2 = tensor.extract_slice %arg2[0, 0] [32, 90] [1, 1] : tensor<62x90xf32> to tensor<32x90xf32>
+
+  //      CHECK: tensor.insert_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+  %8 = tensor.insert_slice %2 into %arg2[0, 0] [32, 90] [1, 1] : tensor<32x90xf32> into tensor<62x90xf32>
+
+  //      CHECK: tensor.insert_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+  %15 = tensor.insert_slice %2 into %8[15, 0] [32, 90] [1, 1] : tensor<32x90xf32> into tensor<62x90xf32>
+
+  return %15 : tensor<62x90xf32>
+}
+
+// -----
+
 #accesses = [
   affine_map<(i) -> (i)>
 ]
@@ -973,7 +1068,7 @@ func @reading_scf_for(%t1: tensor<?xf32> {linalg.inplaceable = true},
     %v2 = vector.transfer_read %e[%s], %cst : tensor<?xf32>, vector<5xf32>
     scf.yield %e, %v2 : tensor<?xf32>, vector<5xf32>
   }
-  // CHECK: __inplace_results_attr__ = ["true", "none"]
+  // CHECK: __inplace_results_attr__ = ["true", "false"]
 
   // Use %t3 in some way without reading it, so that it does not get DCE'd.
   // CHECK:      linalg.generic
@@ -1038,4 +1133,403 @@ func @non_reading_scf_for(%t1: tensor<?xf32> {linalg.inplaceable = true},
     } -> (tensor<?xf32>)
 
   return %o, %v3 : tensor<?xf32>, vector<5xf32>
+}
+
+// -----
+
+//===----------------------------------------------------------------------===//
+// InitTensorOp elimination
+//===----------------------------------------------------------------------===//
+
+// CHECK-LABEL: func @buffer_forwarding_conflict
+func @buffer_forwarding_conflict(%arg0: tensor<?xf32> {linalg.inplaceable = true}, %arg1: index) -> (tensor<?xf32>, tensor<?xf32>) {
+  %cst = arith.constant 0.000000e+00 : f32
+  //      CHECK: tensor.extract_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+  // Instead of allocating, share buffer with some inplace bufferization?
+  %0 = linalg.init_tensor [%arg1] : tensor<?xf32>
+
+  //      CHECK: linalg.fill
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+  %1 = linalg.fill(%cst, %0) : f32, tensor<?xf32> -> tensor<?xf32>
+
+  //      CHECK: tensor.insert_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+  %2 = tensor.insert_slice %1 into %arg0[0] [%arg1] [1] : tensor<?xf32> into tensor<?xf32>
+
+  //      CHECK: tensor.insert_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+  %3 = tensor.insert_slice %1 into %arg0[42] [%arg1] [1] : tensor<?xf32> into tensor<?xf32>
+  return %2, %3 : tensor<?xf32>, tensor<?xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @buffer_forwarding_no_conflict
+func @buffer_forwarding_no_conflict(%arg0: tensor<?xf32> {linalg.inplaceable = true}, %arg1: index) -> (tensor<?xf32>, tensor<?xf32>) {
+  %cst = arith.constant 0.000000e+00 : f32
+  //      CHECK: tensor.extract_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+  // Instead of allocating, share buffer with some inplace bufferization?
+  %0 = linalg.init_tensor [%arg1] : tensor<?xf32>
+
+  //      CHECK: linalg.fill
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+  %1 = linalg.fill(%cst, %0) : f32, tensor<?xf32> -> tensor<?xf32>
+
+  //      CHECK: tensor.insert_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+  %2 = tensor.insert_slice %1 into %arg0[42] [%arg1] [1] : tensor<?xf32> into tensor<?xf32>
+  return %2, %2 : tensor<?xf32>, tensor<?xf32>
+}
+
+// -----
+
+//===----------------------------------------------------------------------===//
+// scf.if cases
+//===----------------------------------------------------------------------===//
+
+// This example passes analysis, but it fails when bufferizing.
+// CHECK-LABEL: func @scf_if_inplace1
+func @scf_if_inplace1(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                      %t2: tensor<?xf32> {linalg.inplaceable = true},
+                      %cond: i1) -> tensor<?xf32> {
+  %r = scf.if %cond -> (tensor<?xf32>) {
+    scf.yield %t1 : tensor<?xf32>
+  } else {
+    scf.yield %t2 : tensor<?xf32>
+  }
+  return %r : tensor<?xf32>
+}
+
+// CHECK-LABEL: func @scf_if_inplace2
+func @scf_if_inplace2(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                      %v: vector<5xf32>, %idx: index,
+                      %cond: i1) -> tensor<?xf32> {
+  %r = scf.if %cond -> (tensor<?xf32>) {
+    scf.yield %t1 : tensor<?xf32>
+  } else {
+    //      CHECK: vector.transfer_write
+    // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+    %t2 = vector.transfer_write %v, %t1[%idx] : vector<5xf32>, tensor<?xf32>
+    scf.yield %t2 : tensor<?xf32>
+  }
+  return %r : tensor<?xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @scf_if_inplace3
+func @scf_if_inplace3(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                      %v1: vector<5xf32>, %v2: vector<5xf32>, %idx: index,
+                      %cond: i1) -> tensor<?xf32> {
+  //      CHECK: tensor.extract_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+  %e = tensor.extract_slice %t1[%idx][%idx][1] : tensor<?xf32> to tensor<?xf32>
+  %r = scf.if %cond -> (tensor<?xf32>) {
+    //      CHECK: vector.transfer_write
+    // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+    %t2 = vector.transfer_write %v1, %e[%idx] : vector<5xf32>, tensor<?xf32>
+    scf.yield %t2 : tensor<?xf32>
+  } else {
+    // Writing the same tensor through an alias. This is OK.
+    //      CHECK: vector.transfer_write
+    // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+    %t3 = vector.transfer_write %v2, %t1[%idx] : vector<5xf32>, tensor<?xf32>
+    scf.yield %t3 : tensor<?xf32>
+  }
+  return %r : tensor<?xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @scf_if_in_place4
+func @scf_if_in_place4(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                       %v: vector<5xf32>, %idx: index,
+                       %cond: i1, %cond2: i1) -> (tensor<?xf32>, vector<10xf32>) {
+  %cst = arith.constant 0.0 : f32
+  %r = scf.if %cond -> (tensor<?xf32>) {
+    scf.yield %t1 : tensor<?xf32>
+  } else {
+    //      CHECK: vector.transfer_write
+    // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+    %t2 = vector.transfer_write %v, %t1[%idx] : vector<5xf32>, tensor<?xf32>
+    scf.yield %t2 : tensor<?xf32>
+  }
+  %r_alias = scf.if %cond2 -> (tensor<?xf32>) {
+    // Reading %r is OK. No conflict.
+    scf.yield %r : tensor<?xf32>
+  } else {
+    scf.yield %r : tensor<?xf32>
+  }
+  %v2 = vector.transfer_read %r_alias[%idx], %cst : tensor<?xf32>, vector<10xf32>
+  return %r_alias, %v2 : tensor<?xf32>, vector<10xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @scf_if_inplace5
+func @scf_if_inplace5(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                      %idx: index, %cond: i1) -> tensor<?xf32> {
+  %r = scf.if %cond -> (tensor<?xf32>) {
+    //      CHECK: tensor.extract_slice
+    // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+    %e = tensor.extract_slice %t1[%idx][%idx][1] : tensor<?xf32> to tensor<?xf32>
+    scf.yield %e : tensor<?xf32>
+  } else {
+    //      CHECK: tensor.extract_slice
+    // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+    %f = tensor.extract_slice %t1[%idx][%idx][1] : tensor<?xf32> to tensor<?xf32>
+    scf.yield %f : tensor<?xf32>
+  }
+
+  // Inserting into an equivalent tensor at the same offset. This bufferizes
+  // inplace.
+  //      CHECK: tensor.insert_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+  %r2 = tensor.insert_slice %r into %t1[%idx][%idx][1] : tensor<?xf32> into tensor<?xf32>
+  return %r2 : tensor<?xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @scf_if_inplace6
+func @scf_if_inplace6(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                      %v1: vector<5xf32>, %v2: vector<5xf32>,
+                      %v3: vector<5xf32>, %idx: index,
+                      %cond: i1, %cond2: i1) -> tensor<?xf32> {
+  // Test nested scf.if ops.
+  %r = scf.if %cond -> (tensor<?xf32>) {
+    %t2 = scf.if %cond2 -> (tensor<?xf32>) {
+      //      CHECK: vector.transfer_write
+      // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+      %t3 = vector.transfer_write %v1, %t1[%idx] : vector<5xf32>, tensor<?xf32>
+      scf.yield %t3 : tensor<?xf32>
+    } else {
+      //      CHECK: vector.transfer_write
+      // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+      %t4 = vector.transfer_write %v3, %t1[%idx] : vector<5xf32>, tensor<?xf32>
+      scf.yield %t4 : tensor<?xf32>
+    }
+    scf.yield %t2 : tensor<?xf32>
+  } else {
+    //      CHECK: vector.transfer_write
+    // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+    %t3 = vector.transfer_write %v2, %t1[%idx] : vector<5xf32>, tensor<?xf32>
+    scf.yield %t3 : tensor<?xf32>
+  }
+  return %r : tensor<?xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @scf_if_inplace7
+func @scf_if_inplace7(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                      %v1: vector<5xf32>, %v2: vector<5xf32>, %idx: index,
+                      %idx2: index, %cond: i1) -> (tensor<?xf32>, vector<5xf32>) {
+  %cst = arith.constant 0.0 : f32
+  %r, %v_r2 = scf.if %cond -> (tensor<?xf32>, vector<5xf32>) {
+    //      CHECK: vector.transfer_write
+    // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+    %t2 = vector.transfer_write %v1, %t1[%idx] : vector<5xf32>, tensor<?xf32>
+    scf.yield %t2, %v1 : tensor<?xf32>, vector<5xf32>
+  } else {
+    // Writing the same tensor through an alias.
+    //      CHECK: vector.transfer_write
+    // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+    %t3 = vector.transfer_write %v2, %t1[%idx] : vector<5xf32>, tensor<?xf32>
+    // Read the original value of %t1. This requires the write in this branch
+    // to be out-of-place. But the write in the other branch can still be
+    // inplace.
+    %v_r = vector.transfer_read %t1[%idx2], %cst : tensor<?xf32>, vector<5xf32>
+    scf.yield %t3, %v_r : tensor<?xf32>, vector<5xf32>
+  }
+  return %r, %v_r2 : tensor<?xf32>, vector<5xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @scf_if_out_of_place1a
+func @scf_if_out_of_place1a(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                            %idx: index, %idx2: index,
+                            %cond: i1) -> tensor<?xf32> {
+  %r = scf.if %cond -> (tensor<?xf32>) {
+    //      CHECK: tensor.extract_slice
+    // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+    %e = tensor.extract_slice %t1[%idx][%idx][1] : tensor<?xf32> to tensor<?xf32>
+    scf.yield %e : tensor<?xf32>
+  } else {
+    scf.yield %t1 : tensor<?xf32>
+  }
+
+  // Reading from and writing to the same tensor via different args. This is a
+  // conflict.
+  //      CHECK: tensor.insert_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+  %r2 = tensor.insert_slice %r into %t1[%idx2][%idx2][1] : tensor<?xf32> into tensor<?xf32>
+  return %r2 : tensor<?xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @scf_if_out_of_place1b
+func @scf_if_out_of_place1b(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                            %idx: index, %idx2: index, %idx3: index,
+                            %cond: i1) -> tensor<?xf32> {
+  %r = scf.if %cond -> (tensor<?xf32>) {
+    //      CHECK: tensor.extract_slice
+    // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+    %e = tensor.extract_slice %t1[%idx][%idx][1] : tensor<?xf32> to tensor<?xf32>
+    scf.yield %e : tensor<?xf32>
+  } else {
+    //      CHECK: tensor.extract_slice
+    // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+    %f = tensor.extract_slice %t1[%idx2][%idx2][1] : tensor<?xf32> to tensor<?xf32>
+    scf.yield %f : tensor<?xf32>
+  }
+
+  // Reading from and writing to the same tensor via different args. This is a
+  // conflict. In contrast to scf_if_out_of_place1a, the fact that %r aliases
+  // with %t1 is only detected when analyzing the tensor.extract_slices. That's
+  // why the tensor.insert_slice is inplace and the two extract_slices are
+  // out-of-place.
+  //      CHECK: tensor.insert_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+  %r2 = tensor.insert_slice %r into %t1[%idx3][%idx3][1] : tensor<?xf32> into tensor<?xf32>
+  return %r2 : tensor<?xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @scf_if_out_of_place1c
+func @scf_if_out_of_place1c(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                            %idx: index, %idx2: index, %cond: i1) -> tensor<?xf32> {
+  %r = scf.if %cond -> (tensor<?xf32>) {
+    //      CHECK: tensor.extract_slice
+    // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+    %e = tensor.extract_slice %t1[%idx][%idx][1] : tensor<?xf32> to tensor<?xf32>
+    scf.yield %e : tensor<?xf32>
+  } else {
+    // TODO: This one could bufferize inplace, but the analysis is too restrictive.
+    //      CHECK: tensor.extract_slice
+    // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+    %f = tensor.extract_slice %t1[%idx2][%idx2][1] : tensor<?xf32> to tensor<?xf32>
+    scf.yield %f : tensor<?xf32>
+  }
+
+  //      CHECK: tensor.insert_slice
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+  %r2 = tensor.insert_slice %r into %t1[%idx2][%idx2][1] : tensor<?xf32> into tensor<?xf32>
+  return %r2 : tensor<?xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @scf_if_out_of_place2
+func @scf_if_out_of_place2(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                           %v: vector<5xf32>, %idx: index,
+                           %cond: i1) -> (tensor<?xf32>, vector<10xf32>) {
+  %cst = arith.constant 0.0 : f32
+  %r = scf.if %cond -> (tensor<?xf32>) {
+    scf.yield %t1 : tensor<?xf32>
+  } else {
+    //      CHECK: vector.transfer_write
+    // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+    %t2 = vector.transfer_write %v, %t1[%idx] : vector<5xf32>, tensor<?xf32>
+    scf.yield %t2 : tensor<?xf32>
+  }
+
+  // Read the old value of %t1. Forces the transfer_write to bufferize
+  // out-of-place.
+  %v2 = vector.transfer_read %t1[%idx], %cst : tensor<?xf32>, vector<10xf32>
+  return %r, %v2 : tensor<?xf32>, vector<10xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @scf_if_out_of_place3
+func @scf_if_out_of_place3(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                           %v: vector<5xf32>, %idx: index,
+                           %cond: i1, %cond2: i1) -> (tensor<?xf32>, vector<10xf32>) {
+  %cst = arith.constant 0.0 : f32
+  %r = scf.if %cond -> (tensor<?xf32>) {
+    scf.yield %t1 : tensor<?xf32>
+  } else {
+    //      CHECK: vector.transfer_write
+    // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+    %t2 = vector.transfer_write %v, %t1[%idx] : vector<5xf32>, tensor<?xf32>
+    scf.yield %t2 : tensor<?xf32>
+  }
+  %t1_alias = scf.if %cond2 -> (tensor<?xf32>) {
+    // scf.yield bufferizes to a read. That is a conflict in this example.
+    scf.yield %t1 : tensor<?xf32>
+  } else {
+    scf.yield %t1 : tensor<?xf32>
+  }
+  %v2 = vector.transfer_read %t1_alias[%idx], %cst : tensor<?xf32>, vector<10xf32>
+  return %r, %v2 : tensor<?xf32>, vector<10xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @some_use
+func @some_use(%A : tensor<?xf32> {linalg.inplaceable = true},
+               %v : vector<5xf32>) -> (tensor<?xf32>) {
+  %idx = arith.constant 0 : index
+  //      CHECK: vector.transfer_write
+  // CHECK-SAME: {__inplace_results_attr__ = ["true"]
+  %0 = vector.transfer_write %v, %A[%idx] : vector<5xf32>, tensor<?xf32>
+  return %0 : tensor<?xf32>
+}
+
+
+// CHECK-LABEL: func @main_func
+func @main_func(%A : tensor<?xf32> {linalg.inplaceable = true},
+                %v : vector<5xf32>) -> (tensor<?xf32>) {
+  // Function calls always bufferize out-of-place at the moment.
+  //      CHECK: call
+  // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+  %0 = call @some_use(%A, %v) : (tensor<?xf32>, vector<5xf32>) -> (tensor<?xf32>)
+  return %0 : tensor<?xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @to_tensor_op_not_writable
+func @to_tensor_op_not_writable(%m: memref<?xf32>, %v:  vector<5xf32>,
+                                %idx1: index, %idx2: index)
+    -> vector<10xf32> {
+  %0 = bufferization.to_tensor %m : memref<?xf32>
+
+  // Write to the tensor. Cannot be inplace due to tensor_load.
+  //      CHECK: vector.transfer_write
+  // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+  %w = vector.transfer_write %v, %0[%idx1] : vector<5xf32>, tensor<?xf32>
+
+  // Read from the tensor and return result.
+  %cst = arith.constant 0.0 : f32
+  %r = vector.transfer_read %w[%idx2], %cst : tensor<?xf32>, vector<10xf32>
+  return %r : vector<10xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @to_memref_op_is_reading
+func @to_memref_op_is_reading(%t1: tensor<?xf32> {linalg.inplaceable = true},
+                              %idx1: index, %idx2: index, %idx3: index,
+                              %v1: vector<5xf32>)
+    -> (vector<5xf32>, vector<5xf32>) {
+  // Write + read to/from tensor.
+  //      CHECK: vector.transfer_write
+  // CHECK-SAME: {__inplace_results_attr__ = ["false"]
+  %1 = vector.transfer_write %v1, %t1[%idx2] : vector<5xf32>, tensor<?xf32>
+  %cst = arith.constant 0.0 : f32
+  %r1 = vector.transfer_read %1[%idx3], %cst : tensor<?xf32>, vector<5xf32>
+
+  // Write + read to/from same memref.
+  %0 = bufferization.to_memref %t1 : memref<?xf32>
+  vector.transfer_write %v1, %0[%idx1] : vector<5xf32>, memref<?xf32>
+  %r2 = vector.transfer_read %0[%idx3], %cst : memref<?xf32>, vector<5xf32>
+
+  return %r1, %r2 : vector<5xf32>, vector<5xf32>
 }
