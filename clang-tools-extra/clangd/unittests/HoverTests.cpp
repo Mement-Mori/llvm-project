@@ -461,7 +461,7 @@ class Foo {})cpp";
        [](HoverInfo &HI) {
          HI.Name = "auto";
          HI.Kind = index::SymbolKind::TypeAlias;
-         HI.Definition = "class Foo<int>";
+         HI.Definition = "Foo<int>";
        }},
       // auto on specialized template
       {R"cpp(
@@ -474,7 +474,7 @@ class Foo {})cpp";
        [](HoverInfo &HI) {
          HI.Name = "auto";
          HI.Kind = index::SymbolKind::TypeAlias;
-         HI.Definition = "class Foo<int>";
+         HI.Definition = "Foo<int>";
        }},
 
       // macro
@@ -648,7 +648,7 @@ class Foo {})cpp";
           [](HoverInfo &HI) {
             HI.Name = "auto";
             HI.Kind = index::SymbolKind::TypeAlias;
-            HI.Definition = "class Foo<X>";
+            HI.Definition = "Foo<X>";
           }},
       {// Falls back to primary template, when the type is not instantiated.
        R"cpp(
@@ -899,8 +899,37 @@ class Foo {})cpp";
        [](HoverInfo &HI) {
          HI.Name = "expression";
          HI.Kind = index::SymbolKind::Unknown;
-         HI.Type = "int [10]";
+         HI.Type = "int[10]";
          HI.Value = "{1}";
+       }},
+      {// Var template decl
+       R"cpp(
+          using m_int = int;
+
+          template <int Size> m_int ^[[arr]][Size];
+         )cpp",
+       [](HoverInfo &HI) {
+         HI.Name = "arr";
+         HI.Kind = index::SymbolKind::Variable;
+         HI.Type = "m_int[Size]";
+         HI.NamespaceScope = "";
+         HI.Definition = "template <int Size> m_int arr[Size]";
+         HI.TemplateParameters = {{{"int"}, {"Size"}, llvm::None}};
+       }},
+      {// Var template decl specialization
+       R"cpp(
+          using m_int = int;
+
+          template <int Size> m_int arr[Size];
+
+          template <> m_int ^[[arr]]<4>[4];
+         )cpp",
+       [](HoverInfo &HI) {
+         HI.Name = "arr<4>";
+         HI.Kind = index::SymbolKind::Variable;
+         HI.Type = "m_int[4]";
+         HI.NamespaceScope = "";
+         HI.Definition = "m_int arr[4]";
        }}};
   for (const auto &Case : Cases) {
     SCOPED_TRACE(Case.Code);
@@ -2024,7 +2053,7 @@ TEST(Hover, All) {
           [](HoverInfo &HI) {
             HI.Name = "auto";
             HI.Kind = index::SymbolKind::TypeAlias;
-            HI.Definition = "int";
+            HI.Definition = "int_type";
           }},
       {
           R"cpp(// auto on alias
@@ -2035,7 +2064,7 @@ TEST(Hover, All) {
           [](HoverInfo &HI) {
             HI.Name = "auto";
             HI.Kind = index::SymbolKind::TypeAlias;
-            HI.Definition = "struct cls";
+            HI.Definition = "cls_type";
             HI.Documentation = "auto on alias";
           }},
       {
@@ -2047,7 +2076,7 @@ TEST(Hover, All) {
           [](HoverInfo &HI) {
             HI.Name = "auto";
             HI.Kind = index::SymbolKind::TypeAlias;
-            HI.Definition = "struct templ<int>";
+            HI.Definition = "templ<int>";
             HI.Documentation = "auto on alias";
           }},
       {
@@ -2683,6 +2712,32 @@ protected: int method())",
       },
       {
           [](HoverInfo &HI) {
+            HI.Definition = "cls(int a, int b = 5)";
+            HI.AccessSpecifier = "public";
+            HI.Kind = index::SymbolKind::Constructor;
+            HI.NamespaceScope = "";
+            HI.LocalScope = "cls";
+            HI.Name = "cls";
+            HI.Parameters.emplace();
+            HI.Parameters->emplace_back();
+            HI.Parameters->back().Type = "int";
+            HI.Parameters->back().Name = "a";
+            HI.Parameters->emplace_back();
+            HI.Parameters->back().Type = "int";
+            HI.Parameters->back().Name = "b";
+            HI.Parameters->back().Default = "5";
+          },
+          R"(constructor cls
+
+Parameters:
+- int a
+- int b = 5
+
+// In cls
+public: cls(int a, int b = 5))",
+      },
+      {
+          [](HoverInfo &HI) {
             HI.Kind = index::SymbolKind::Union;
             HI.AccessSpecifier = "private";
             HI.Name = "foo";
@@ -2934,6 +2989,49 @@ Value = val
 def)pt";
   EXPECT_EQ(HI.present().asPlainText(), ExpectedPlaintext);
 }
+
+TEST(Hover, SpaceshipTemplateNoCrash) {
+  Annotations T(R"cpp(
+  namespace std {
+  struct strong_ordering {
+    int n;
+    constexpr operator int() const { return n; }
+    static const strong_ordering equal, greater, less;
+  };
+  constexpr strong_ordering strong_ordering::equal = {0};
+  constexpr strong_ordering strong_ordering::greater = {1};
+  constexpr strong_ordering strong_ordering::less = {-1};
+  }
+
+  template <typename T>
+  struct S {
+    // Foo bar baz
+    friend auto operator<=>(S, S) = default;
+  };
+  static_assert(S<void>() =^= S<void>());
+    )cpp");
+
+  TestTU TU = TestTU::withCode(T.code());
+  TU.ExtraArgs.push_back("-std=c++20");
+  auto AST = TU.build();
+  auto HI = getHover(AST, T.point(), format::getLLVMStyle(), nullptr);
+  EXPECT_EQ(HI->Documentation, "Foo bar baz");
+}
+
+TEST(Hover, ForwardStructNoCrash) {
+  Annotations T(R"cpp(
+  struct Foo;
+  int bar;
+  auto baz = (Fo^o*)&bar;
+    )cpp");
+
+  TestTU TU = TestTU::withCode(T.code());
+  auto AST = TU.build();
+  auto HI = getHover(AST, T.point(), format::getLLVMStyle(), nullptr);
+  ASSERT_TRUE(HI);
+  EXPECT_EQ(*HI->Value, "&bar");
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang
